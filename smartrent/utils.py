@@ -416,7 +416,7 @@ class Client:
                 headers = {"Authorization": f"Bearer {token}"}
                 async with websockets.connect(
                     uri,
-                    extra_headers=headers,
+                    additional_headers=headers,
                     ping_interval=15,  # keep NAT and LB sessions alive
                     ping_timeout=10,
                     close_timeout=5,
@@ -532,7 +532,7 @@ class Client:
 
         async with websockets.connect(
             uri, 
-            extra_headers=headers,
+            additional_headers=headers,
             ping_interval=15, 
             ping_timeout=10, 
             close_timeout=5
