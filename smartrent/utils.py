@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import aiohttp
 import websockets
-from websockets.exceptions import ConnectionClosedError
+from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 if TYPE_CHECKING:
     from smartrent.device import Device
@@ -413,8 +413,10 @@ class Client:
                 uri = SMARTRENT_WEBSOCKET_URI.format(token)
 
                 _LOGGER.info("Connecting to Websocket...")
+                headers = {"Authorization": f"Bearer {token}"}
                 async with websockets.connect(
                     uri,
+                    extra_headers=headers,
                     ping_interval=15,  # keep NAT and LB sessions alive
                     ping_timeout=10,
                     close_timeout=5,
@@ -495,19 +497,23 @@ class Client:
         payload = COMMAND_PAYLOAD.format(
             attribute_name=attribute_name, value=value, device_id=device._device_id
         )
-        try:
-            await self._async_send_payload(device, payload)
-        except websockets.exceptions.InvalidStatusCode as exc:  # type: ignore
-            _LOGGER.debug(
-                'Possible issue during send_payload: "%s" '
-                "Refreshing token and retrying",
-                exc,
-            )
-
-            # update token once
-            await self._async_refresh_token()
-
-            await self._async_send_payload(device, payload)
+        
+        for attempt in range(2):  # Try twice
+            try:
+                await self._async_send_payload(device, payload)
+                return  # Success, exit
+            except InvalidStatus as exc:
+                if attempt == 0:  # First attempt failed
+                    _LOGGER.debug(
+                        'Possible issue during send_payload: "%s" '
+                        "Refreshing token and retrying",
+                        exc,
+                    )
+                    # update token once
+                    await self._async_refresh_token()
+                else:
+                    # Second attempt failed, re-raise
+                    raise
 
     async def _async_send_payload(self, device: "Device", payload: str):
         """
@@ -517,14 +523,19 @@ class Client:
 
         ``payload`` string of device attributes
 
-        Throws ``websockets.exceptions.InvalidStatusCode`` upon bad websocket event
+        Throws ``websockets.exceptions.InvalidStatus`` upon bad websocket event
         """
         _LOGGER.info("sending payload %s", payload)
 
         uri = SMARTRENT_WEBSOCKET_URI.format(self._token)
+        headers = {"Authorization": f"Bearer {self._token}"}
 
         async with websockets.connect(
-            uri, ping_interval=15, ping_timeout=10, close_timeout=5
+            uri, 
+            extra_headers=headers,
+            ping_interval=15, 
+            ping_timeout=10, 
+            close_timeout=5
         ) as websocket:  # type: ignore
             await self._async_ws_joiner(websocket, device)
             await websocket.send(payload)
