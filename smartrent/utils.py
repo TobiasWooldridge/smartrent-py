@@ -530,11 +530,11 @@ class Client:
         headers = {"Authorization": f"Bearer {self._token}"}
 
         async with websockets.connect(
-            uri, 
+            uri,
             additional_headers=headers,
-            ping_interval=15, 
+            ping_interval=15,
             ping_timeout=10,
-            close_timeout=5
+            close_timeout=5,
         ) as websocket:  # type: ignore
             await self._async_ws_joiner(websocket, device)
             await websocket.send(payload)
