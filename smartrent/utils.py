@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import random
+import ssl
 import time
 import traceback
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -93,6 +94,7 @@ class Client:
 
         self._refresh_token_lock: Optional[asyncio.Lock] = None
         self._poll_ok: bool = True
+        self._ssl_context: Optional[ssl.SSLContext] = None
 
     def __del__(self):
         """
@@ -293,6 +295,19 @@ class Client:
         resp = await self._aiohttp_session.post(SMARTRENT_TOKENS_URI, headers=headers)
         return await resp.json()
 
+    async def _async_get_ssl_context(self) -> ssl.SSLContext:
+        """
+        Builds the TLS context for websocket connections once, off the event
+        loop: ssl.create_default_context() reads the CA store from disk, which
+        is blocking I/O that asyncio consumers (e.g. Home Assistant) flag.
+        """
+        if self._ssl_context is None:
+            loop = asyncio.get_running_loop()
+            self._ssl_context = await loop.run_in_executor(
+                None, ssl.create_default_context
+            )
+        return self._ssl_context
+
     @property
     def reachable(self) -> bool:
         """
@@ -445,6 +460,7 @@ class Client:
                 headers = {"Authorization": f"Bearer {token}"}
                 async with websockets.connect(
                     uri,
+                    ssl=await self._async_get_ssl_context(),
                     additional_headers=headers,
                     ping_interval=15,  # keep NAT and LB sessions alive
                     ping_timeout=10,
@@ -570,6 +586,7 @@ class Client:
 
         async with websockets.connect(
             uri,
+            ssl=await self._async_get_ssl_context(),
             additional_headers=headers,
             ping_interval=15,
             ping_timeout=10,
