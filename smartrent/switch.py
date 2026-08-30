@@ -26,14 +26,16 @@ class BinarySwitch(Device):
         """
         Sets state for switch
         """
-        self._on = value
-
         # Convert to lowercase just like SmartRent website does
         str_value = str(value).lower()
 
         await self._client._async_send_command(
             self, attribute_name="on", value=str_value
         )
+
+        # Only update local state once the server accepted the command;
+        # the device's real state change still arrives via websocket
+        self._on = value
 
     def _fetch_state_helper(self, data: dict):
         """

@@ -48,6 +48,12 @@ class InvalidAuthError(SmartRentError):
     """
 
 
+class CommandFailedError(SmartRentError):
+    """
+    Error raised when SmartRent rejects a device command
+    """
+
+
 class Client:
     """
     Represents Client for SmartRent http and websocket api.
@@ -86,6 +92,7 @@ class Client:
         self._ws = None
 
         self._refresh_token_lock: Optional[asyncio.Lock] = None
+        self._poll_ok: bool = True
 
     def __del__(self):
         """
@@ -116,14 +123,14 @@ class Client:
         Gets list of device dictionaries from SmartRent's api.
         Also handles retry if token is bad
         """
-        if not self._token:
-            await self._async_refresh_token()
+        # Refresh proactively; no-op unless the token is missing or near expiry
+        await self._async_refresh_token()
 
         try:
             res = await self._async_get_devices_data()
         except InvalidAuthError:
             _LOGGER.warning("InvalidAuth detected. Trying again with updated token...")
-            await self._async_refresh_token()
+            await self._async_refresh_token(force=True)
 
             res = await self._async_get_devices_data()
 
@@ -162,14 +169,14 @@ class Client:
         Gets device dictionary from SmartRent's api.
         Also handles retry if token is bad
         """
-        if not self._token:
-            await self._async_refresh_token()
+        # Refresh proactively; no-op unless the token is missing or near expiry
+        await self._async_refresh_token()
 
         try:
             res = await self._async_get_device_data(id)
         except InvalidAuthError:
             _LOGGER.warning("InvalidAuth detected. Trying again with updated token...")
-            await self._async_refresh_token()
+            await self._async_refresh_token(force=True)
 
             res = await self._async_get_device_data(id)
 
@@ -192,9 +199,13 @@ class Client:
 
         return device_dict
 
-    async def _async_refresh_token(self) -> None:
+    async def _async_refresh_token(self, force: bool = False) -> None:
         """
         Refreshes API token from SmartRent
+
+        ``force`` refreshes even when the current token is not near expiry.
+        Needed when the server has invalidated the session early, otherwise
+        the not-yet-expired check below would keep a dead token forever.
         """
         response = {}
 
@@ -209,7 +220,7 @@ class Client:
             return
 
         # Check to make sure token is expired before trying to refresh
-        if self._token_exp_time:
+        if not force and self._token_exp_time:
             if self._token_exp_time > (math.ceil(time.time()) + 60):
                 _LOGGER.info("Token not expired. Not refreshing.")
                 return
@@ -281,6 +292,21 @@ class Client:
         headers = {"authorization-x-refresh": self._refresh_token}
         resp = await self._aiohttp_session.post(SMARTRENT_TOKENS_URI, headers=headers)
         return await resp.json()
+
+    @property
+    def reachable(self) -> bool:
+        """
+        True while the most recent REST poll of SmartRent succeeded.
+        Lets consumers mark entities unavailable when the cloud is down.
+        """
+        return self._poll_ok
+
+    async def _async_set_poll_ok(self, value: bool):
+        if self._poll_ok == value:
+            return
+        self._poll_ok = value
+        for device in list(self._subscribed_devices):
+            await device._async_call_callbacks()
 
     def _subscribe_device_to_updater(self, device: "Device"):
         """
@@ -372,6 +398,7 @@ class Client:
         while True:
             try:
                 await self._async_fetch_subscribed_devices_status()
+                await self._async_set_poll_ok(True)
                 await asyncio.sleep(SMARTRENT_FETCH_INTERVAL_SECONDS)
 
             except Exception as exc:
@@ -379,6 +406,8 @@ class Client:
                     "Exception occured! %s %s", type(exc).__name__, type(exc)
                 )
                 _LOGGER.warning(traceback.format_exc())
+
+                await self._async_set_poll_ok(False)
 
                 _LOGGER.warning(
                     "Retrying fetches in %s seconds...",
@@ -427,6 +456,11 @@ class Client:
                         websocket, self._subscribed_devices
                     )
 
+                    # Connection is up: expose it so late subscribers can
+                    # join, and reset the reconnect backoff
+                    self._ws = websocket
+                    retries = 0
+
                     # iterator to recieve messages from websocket
                     async for message in websocket:
                         message_list = json.loads(f"{message}")
@@ -442,7 +476,7 @@ class Client:
                                 "WS reported auth or channel error,"
                                 " refreshing token and reconnecting"
                             )
-                            await self._async_refresh_token()
+                            await self._async_refresh_token(force=True)
                             break
 
                         event_type = formatted_resp.get("type", "")
@@ -467,6 +501,11 @@ class Client:
             except (ConnectionClosedError, ConnectionResetError) as exc:
                 _LOGGER.warning("WebSocket closed by peer: %s", exc)
                 self._ws = None
+                # Count as a retry so the next pass backfills events missed
+                # while disconnected, and pause briefly so a repeatedly
+                # closing server is not hammered
+                retries += 1
+                await asyncio.sleep(1 + random.uniform(0, 2))
             except Exception as exc:
                 _LOGGER.warning(
                     "Exception occured! %s %s", type(exc).__name__, type(exc)
@@ -501,7 +540,7 @@ class Client:
             try:
                 await self._async_send_payload(device, payload)
                 return  # Success, exit
-            except InvalidStatus as exc:
+            except (InvalidStatus, CommandFailedError) as exc:
                 if attempt == 0:  # First attempt failed
                     _LOGGER.debug(
                         'Possible issue during send_payload: "%s" '
@@ -509,7 +548,7 @@ class Client:
                         exc,
                     )
                     # update token once
-                    await self._async_refresh_token()
+                    await self._async_refresh_token(force=True)
                 else:
                     # Second attempt failed, re-raise
                     raise
@@ -538,3 +577,37 @@ class Client:
         ) as websocket:  # type: ignore
             await self._async_ws_joiner(websocket, device)
             await websocket.send(payload)
+            await self._async_confirm_replies(websocket)
+
+    async def _async_confirm_replies(self, websocket):
+        """
+        Reads the server's phx_reply messages after a join + command send,
+        so rejections surface instead of being silently dropped.
+
+        The join always gets a phx_reply. The command itself may or may not
+        get one (Phoenix channels only reply when the handler chooses to),
+        so a quiet socket after an ok join counts as accepted; an error
+        reply raises ``CommandFailedError``.
+        """
+        replies = 0
+        while replies < 2:
+            try:
+                timeout = 10 if replies == 0 else 3
+                message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                if replies == 0:
+                    raise CommandFailedError(
+                        "No reply to channel join within 10 seconds"
+                    ) from exc
+                _LOGGER.debug("No synchronous reply to command; assuming accepted")
+                return
+
+            message_list = json.loads(message)
+            if message_list[3] != "phx_reply":
+                continue
+
+            reply = message_list[4]
+            if reply.get("status") != "ok":
+                raise CommandFailedError(f"SmartRent rejected command: {reply}")
+            replies += 1
+            _LOGGER.debug("phx_reply %s ok (%s/2)", message_list, replies)

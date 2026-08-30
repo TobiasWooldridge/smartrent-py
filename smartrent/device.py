@@ -44,6 +44,12 @@ class Device:
         """
         return self._battery_powered
 
+    def get_reachable(self) -> bool:
+        """
+        True while the shared client's REST polling of SmartRent succeeds
+        """
+        return self._client.reachable
+
     def get_battery_level(self) -> Optional[int]:
         """
         Gets devices battery level (assuming device is battery powered)

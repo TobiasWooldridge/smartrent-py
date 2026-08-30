@@ -33,14 +33,16 @@ class DoorLock(Device):
         """
         Sets state for lock
         """
-        self._locked = value
-
         # Convert to lowercase just like SmartRent website does
         str_value = str(value).lower()
 
         await self._client._async_send_command(
             self, attribute_name="locked", value=str_value
         )
+
+        # Only update local state once the server accepted the command;
+        # the device's real state change still arrives via websocket
+        self._locked = value
 
     def _fetch_state_helper(self, data: dict):
         """
