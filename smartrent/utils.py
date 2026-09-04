@@ -17,6 +17,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Seconds of remaining validity below which a token is refreshed.
+# Default (command path, websocket connect): only when it is about to expire.
+TOKEN_REFRESH_MARGIN = 60
+# Periodic poll path: SmartRent tokens live ~18 min and the poll runs every
+# 10 min, so refreshing whenever less than 15 min remain means every poll
+# refreshes and a command never finds an expired token (2026-09-04).
+POLL_REFRESH_MARGIN = 15 * 60
+
 SMARTRENT_FETCH_INTERVAL_SECONDS = 600
 
 SMARTRENT_BASE_URI = "https://control.smartrent.com/api/v2/"
@@ -125,8 +133,9 @@ class Client:
         Gets list of device dictionaries from SmartRent's api.
         Also handles retry if token is bad
         """
-        # Refresh proactively; no-op unless the token is missing or near expiry
-        await self._async_refresh_token()
+        # Refresh proactively so the token outlives the next poll interval;
+        # commands then never pay for a refresh on their own critical path.
+        await self._async_refresh_token(min_remaining=POLL_REFRESH_MARGIN)
 
         try:
             res = await self._async_get_devices_data()
@@ -171,8 +180,8 @@ class Client:
         Gets device dictionary from SmartRent's api.
         Also handles retry if token is bad
         """
-        # Refresh proactively; no-op unless the token is missing or near expiry
-        await self._async_refresh_token()
+        # Same proactive margin as the all-devices poll.
+        await self._async_refresh_token(min_remaining=POLL_REFRESH_MARGIN)
 
         try:
             res = await self._async_get_device_data(id)
@@ -201,13 +210,22 @@ class Client:
 
         return device_dict
 
-    async def _async_refresh_token(self, force: bool = False) -> None:
+    async def _async_refresh_token(
+        self, force: bool = False, min_remaining: int = TOKEN_REFRESH_MARGIN
+    ) -> None:
         """
         Refreshes API token from SmartRent
 
         ``force`` refreshes even when the current token is not near expiry.
         Needed when the server has invalidated the session early, otherwise
         the not-yet-expired check below would keep a dead token forever.
+
+        ``min_remaining`` is how many seconds of validity the token must
+        still have to be left alone. The periodic poll passes
+        ``POLL_REFRESH_MARGIN`` so the token always outlives the gap until
+        the next poll: a command that finds an expired token has to refresh
+        (and re-join the websocket) before it can send, which was measured
+        at ~2 s of extra latency on a front-door unlock.
         """
         response = {}
 
@@ -223,7 +241,7 @@ class Client:
 
         # Check to make sure token is expired before trying to refresh
         if not force and self._token_exp_time:
-            if self._token_exp_time > (math.ceil(time.time()) + 60):
+            if self._token_exp_time > (math.ceil(time.time()) + min_remaining):
                 _LOGGER.info("Token not expired. Not refreshing.")
                 return
 
