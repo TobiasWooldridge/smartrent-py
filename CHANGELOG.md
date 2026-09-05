@@ -1,5 +1,12 @@
 # Changelog (thw fork)
 
+## 0.7.2 - 2026-09-05
+- First send of a command goes over the already-open update websocket
+  (authenticated, joined to every device topic), skipping the per-command TLS
+  handshake and channel join (~0.5-0.9 s). Falls back to a fresh connection
+  when the live socket is down or the send fails; re-sends always use a fresh
+  connection. `phx_reply` errors on the live socket are logged as warnings.
+
 ## 0.7.1 - 2026-09-05
 - Re-send schedule instead of a single 12 s timeout: commands are absolute
   state sets, so the same payload is re-sent after 5 s of hub silence, again at

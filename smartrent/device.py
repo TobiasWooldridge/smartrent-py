@@ -185,8 +185,13 @@ class Device:
             while True:
                 result.attempts += 1
                 send_started = time.monotonic()
+                # First attempt rides the live socket (fast); a re-send opens
+                # a fresh connection so a wedged socket cannot eat every try
                 await self._client._async_send_command(
-                    self, attribute_name=attribute, value=value
+                    self,
+                    attribute_name=attribute,
+                    value=value,
+                    prefer_live=result.attempts == 1,
                 )
                 remaining = deadline_at - time.monotonic()
                 wait = gaps.pop(0) if gaps else remaining

@@ -24,7 +24,7 @@ class StubClient:
     def _unsubscribe_device_to_updater(self, device):
         pass
 
-    async def _async_send_command(self, device, attribute_name, value):
+    async def _async_send_command(self, device, attribute_name, value, prefer_live=True):
         self.sends.append((attribute_name, value))
 
 
@@ -135,7 +135,7 @@ async def test_poll_can_confirm_a_missed_event():
 async def test_server_rejection_surfaces_as_failed():
     lock, client = make_lock(locked=True)
 
-    async def reject(device, attribute_name, value):
+    async def reject(device, attribute_name, value, prefer_live=True):
         raise CommandFailedError("SmartRent rejected command: nope")
 
     client._async_send_command = reject
