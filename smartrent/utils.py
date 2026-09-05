@@ -28,11 +28,14 @@ POLL_REFRESH_MARGIN = 15 * 60
 SMARTRENT_FETCH_INTERVAL_SECONDS = 600
 
 # A command is only "done" when the hub reports the attribute at its new value
-# over the update websocket; the server's phx_reply just means "queued". Wait
-# this long per attempt for that report, then re-send once. Measured on a
-# Z-Wave deadbolt: 2-4 s when healthy, 8-30 s or never when the hub is unwell.
-COMMAND_CONFIRM_TIMEOUT = 12
-COMMAND_RETRIES = 1
+# over the update websocket; the server's phx_reply just means "queued".
+# Commands are absolute ("locked=false"), so re-sending is idempotent and can
+# be aggressive. Measured on a Z-Wave deadbolt: a healthy hub reports in
+# 2.1-3.8 s; an unwell one took 8.6-31 s or never reported. So: re-send after
+# 5 s of silence (past the healthy tail), again at 10 s and 17 s, and give up
+# at the 25 s deadline.
+COMMAND_RETRY_AFTER = (5.0, 5.0, 7.0)
+COMMAND_DEADLINE = 25.0
 
 SMARTRENT_BASE_URI = "https://control.smartrent.com/api/v2/"
 SMARTRENT_SESSIONS_URI = SMARTRENT_BASE_URI + "sessions"

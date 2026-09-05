@@ -1,5 +1,12 @@
 # Changelog (thw fork)
 
+## 0.7.1 - 2026-09-05
+- Re-send schedule instead of a single 12 s timeout: commands are absolute
+  state sets, so the same payload is re-sent after 5 s of hub silence, again at
+  10 s and 17 s, and the command fails at the 25 s deadline
+  (`COMMAND_RETRY_AFTER`, `COMMAND_DEADLINE`). A healthy hub reports in 2-4 s,
+  so the first re-send only ever fires on a hub that is already misbehaving.
+
 ## 0.7.0 - 2026-09-05
 - `Device.async_set_attribute`: a command completes only when the hub reports
   the attribute at its new value (websocket event or poll), waiting

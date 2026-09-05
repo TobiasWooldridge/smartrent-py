@@ -5,9 +5,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .utils import COMMAND_CONFIRM_TIMEOUT, COMMAND_RETRIES, Client, CommandFailedError
+from .utils import COMMAND_DEADLINE, COMMAND_RETRY_AFTER, Client, CommandFailedError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,28 +129,32 @@ class Device:
         attribute: str,
         value: str,
         *,
-        confirm_timeout: float = COMMAND_CONFIRM_TIMEOUT,
-        retries: int = COMMAND_RETRIES,
+        retry_after: Sequence[float] = COMMAND_RETRY_AFTER,
+        deadline: float = COMMAND_DEADLINE,
     ) -> CommandResult:
         """
         Sends ``attribute=value`` and waits for the hub to report it.
 
         The server accepting the command (its phx_reply) proves nothing
         about the device: on a slow or wedged hub the report can take tens
-        of seconds or never come. So this waits ``confirm_timeout`` seconds
-        for the report, re-sends up to ``retries`` times, and raises
-        ``CommandFailedError`` if the device never reports the value. A
-        device that already reports the value gets the command sent once
-        (the cache may be stale) and returns ``outcome="unchanged"``
-        without waiting. Callbacks fire when the command starts and ends so
-        entities can render the in-flight state.
+        of seconds or never come. Commands are absolute state sets, so this
+        re-sends the same payload after each silence in ``retry_after``
+        (seconds since the previous send) and raises ``CommandFailedError``
+        if the device has not reported the value by ``deadline`` seconds
+        after the first send. A device that already reports the value gets
+        the command sent once (the cache may be stale) and returns
+        ``outcome="unchanged"`` without waiting. Callbacks fire when the
+        command starts and ends so entities can render the in-flight state.
         """
         pending = self._pending_confirmation
         if pending and pending[0] == attribute and pending[1] == value:
             # Same command already in flight: ride along instead of racing it
-            _LOGGER.info("%s: %s=%s already in flight, waiting on it", self._name, attribute, value)
+            _LOGGER.info(
+                "%s: %s=%s already in flight, waiting on it",
+                self._name, attribute, value,
+            )
             try:
-                await asyncio.wait_for(asyncio.shield(pending[2]), confirm_timeout)
+                await asyncio.wait_for(asyncio.shield(pending[2]), deadline)
             except asyncio.TimeoutError:
                 pass
             return self._last_command  # type: ignore[return-value]
@@ -162,6 +166,8 @@ class Device:
         self._pending_confirmation = (attribute, value, future)
         await self._async_call_callbacks()
         started = time.monotonic()
+        deadline_at = started + deadline
+        gaps = list(retry_after)
         try:
             if self._get_attribute(attribute) == value:
                 result.attempts = 1
@@ -176,25 +182,30 @@ class Device:
                 )
                 return result
 
-            for attempt in range(1, retries + 2):
-                result.attempts = attempt
+            while True:
+                result.attempts += 1
                 send_started = time.monotonic()
                 await self._client._async_send_command(
                     self, attribute_name=attribute, value=value
                 )
+                remaining = deadline_at - time.monotonic()
+                wait = gaps.pop(0) if gaps else remaining
+                wait = max(0.0, min(wait, remaining))
                 _LOGGER.info(
-                    "%s: %s=%s attempt %d accepted by server in %.2fs, "
-                    "waiting up to %.0fs for the hub",
-                    self._name, attribute, value, attempt,
-                    time.monotonic() - send_started, confirm_timeout,
+                    "%s: %s=%s attempt %d accepted by server in %.2fs; "
+                    "hub has %.0fs before the next send (deadline in %.0fs)",
+                    self._name, attribute, value, result.attempts,
+                    time.monotonic() - send_started, wait, remaining,
                 )
                 try:
-                    await asyncio.wait_for(asyncio.shield(future), confirm_timeout)
+                    await asyncio.wait_for(asyncio.shield(future), wait)
                 except asyncio.TimeoutError:
+                    if time.monotonic() >= deadline_at:
+                        break
                     _LOGGER.warning(
-                        "%s: hub has not reported %s=%s %.0fs after attempt %d/%d",
+                        "%s: no hub report of %s=%s %.0fs after attempt %d, re-sending",
                         self._name, attribute, value,
-                        time.monotonic() - send_started, attempt, retries + 1,
+                        time.monotonic() - send_started, result.attempts,
                     )
                     continue
                 result.outcome = "confirmed"
@@ -202,14 +213,14 @@ class Device:
                 _LOGGER.info(
                     "%s: %s=%s confirmed by hub %.1fs after first send (%d attempt%s)",
                     self._name, attribute, value, result.latency,
-                    attempt, "" if attempt == 1 else "s",
+                    result.attempts, "" if result.attempts == 1 else "s",
                 )
                 return result
 
             result.outcome = "failed"
             result.error = (
-                f"hub never reported {attribute}={value} after {result.attempts} "
-                f"attempts over {time.monotonic() - started:.0f}s"
+                f"hub never reported {attribute}={value}: {result.attempts} "
+                f"sends over {time.monotonic() - started:.0f}s"
             )
             _LOGGER.error("%s: %s", self._name, result.error)
             raise CommandFailedError(f"{self._name}: {result.error}")
