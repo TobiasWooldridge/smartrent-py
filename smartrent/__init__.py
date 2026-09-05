@@ -1,4 +1,5 @@
 from smartrent.api import async_login
+from smartrent.device import CommandResult, Device
 from smartrent.lock import DoorLock
 from smartrent.sensor import LeakSensor, MotionSensor, Sensor
 from smartrent.switch import BinarySwitch, MultilevelSwitch
@@ -7,6 +8,8 @@ from smartrent.utils import Client
 
 __all__ = [
     "async_login",
+    "CommandResult",
+    "Device",
     "DoorLock",
     "Thermostat",
     "LeakSensor",

@@ -27,6 +27,13 @@ POLL_REFRESH_MARGIN = 15 * 60
 
 SMARTRENT_FETCH_INTERVAL_SECONDS = 600
 
+# A command is only "done" when the hub reports the attribute at its new value
+# over the update websocket; the server's phx_reply just means "queued". Wait
+# this long per attempt for that report, then re-send once. Measured on a
+# Z-Wave deadbolt: 2-4 s when healthy, 8-30 s or never when the hub is unwell.
+COMMAND_CONFIRM_TIMEOUT = 12
+COMMAND_RETRIES = 1
+
 SMARTRENT_BASE_URI = "https://control.smartrent.com/api/v2/"
 SMARTRENT_SESSIONS_URI = SMARTRENT_BASE_URI + "sessions"
 SMARTRENT_TOKENS_URI = SMARTRENT_BASE_URI + "tokens"

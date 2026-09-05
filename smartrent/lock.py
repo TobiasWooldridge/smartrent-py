@@ -29,20 +29,33 @@ class DoorLock(Device):
         """
         return self._locked
 
+    def get_pending_locked(self) -> Optional[bool]:
+        """
+        The locked value a command is waiting for the hub to confirm,
+        or None when nothing is in flight
+        """
+        pending = self.get_pending_command()
+        if pending and pending[0] == "locked":
+            return pending[1] == "true"
+        return None
+
+    def _get_attribute(self, attribute: str) -> Optional[str]:
+        if attribute == "locked" and self._locked is not None:
+            return str(self._locked).lower()
+        if attribute == "notifications":
+            return self._notification
+        return None
+
     async def async_set_locked(self, value: bool):
         """
-        Sets state for lock
+        Locks or unlocks, returning once the hub reports the new state.
+
+        Raises ``CommandFailedError`` if the hub never does; the cached
+        state is only ever set from the hub's own reports, never
+        optimistically, so a lost command cannot look like a success.
         """
         # Convert to lowercase just like SmartRent website does
-        str_value = str(value).lower()
-
-        await self._client._async_send_command(
-            self, attribute_name="locked", value=str_value
-        )
-
-        # Only update local state once the server accepted the command;
-        # the device's real state change still arrives via websocket
-        self._locked = value
+        await self.async_set_attribute("locked", str(value).lower())
 
     def _fetch_state_helper(self, data: dict):
         """
