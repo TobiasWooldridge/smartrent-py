@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .utils import COMMAND_DEADLINE, COMMAND_RETRY_AFTER, Client, CommandFailedError
+from .utils import (
+    COMMAND_DEADLINE,
+    COMMAND_RETRY_AFTER,
+    NOTIFICATION_GRACE,
+    Client,
+    CommandFailedError,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +39,11 @@ class CommandResult:
     outcome: str = "pending"
     latency: Optional[float] = None
     error: Optional[str] = None
+    # None: device has no operation notifications for this attribute.
+    # True: the matching notification (e.g. UNLOCK_VIA_RF) arrived, so the
+    # mechanism really moved. False: the hub reported the value but no
+    # notification followed even after a verification re-send.
+    verified: Optional[bool] = None
 
 
 class Device:
@@ -52,6 +63,11 @@ class Device:
 
         # (attribute, value, future) while a command awaits the hub's report
         self._pending_confirmation: Optional[
+            Tuple[str, str, "asyncio.Future[bool]"]
+        ] = None
+        # (attribute, value, future) while a command awaits the device's own
+        # operation notification proving the mechanism moved
+        self._pending_notification: Optional[
             Tuple[str, str, "asyncio.Future[bool]"]
         ] = None
         self._last_command: Optional[CommandResult] = None
@@ -110,6 +126,40 @@ class Device:
         """
         return None
 
+    def _expects_notification(self, attribute: str, value: str) -> bool:
+        """
+        True if the device emits an operation notification when
+        ``attribute`` really changes to ``value`` (locks do). Subclasses
+        override together with ``_notification_matches``.
+        """
+        return False
+
+    def _notification_matches(
+        self, attribute: str, value: str, notification: Any
+    ) -> bool:
+        return False
+
+    def _apply_reported_value(self, attribute: str, value: str) -> None:
+        """
+        Subclasses set their cached attribute from a value proven by a
+        notification when the attribute report itself was lost.
+        """
+
+    def _resolve_notification(self, notification: Any):
+        """
+        Completes the pending notification future when the device reports
+        the operation matching the in-flight command; also counts as the
+        attribute report if that never arrived (the bolt moved either way).
+        """
+        pending = self._pending_notification
+        if not pending or pending[2].done():
+            return
+        attribute, value, future = pending
+        if self._notification_matches(attribute, value, notification):
+            future.set_result(True)
+            self._apply_reported_value(attribute, value)
+            self._resolve_confirmation(attribute, value)
+
     def _resolve_confirmation(self, attribute: Optional[str], state: Any):
         """
         Completes the pending command's future when a report of
@@ -164,6 +214,10 @@ class Device:
         loop = asyncio.get_running_loop()
         future: "asyncio.Future[bool]" = loop.create_future()
         self._pending_confirmation = (attribute, value, future)
+        notified: Optional["asyncio.Future[bool]"] = None
+        if self._expects_notification(attribute, value):
+            notified = loop.create_future()
+            self._pending_notification = (attribute, value, notified)
         await self._async_call_callbacks()
         started = time.monotonic()
         deadline_at = started + deadline
@@ -220,6 +274,14 @@ class Device:
                     self._name, attribute, value, result.latency,
                     result.attempts, "" if result.attempts == 1 else "s",
                 )
+                # The entity can show the new state now; verification below
+                # only decides whether to re-send.
+                self._pending_confirmation = None
+                await self._async_call_callbacks()
+                if notified is not None:
+                    await self._async_verify_by_notification(
+                        result, notified, attribute, value
+                    )
                 return result
 
             result.outcome = "failed"
@@ -236,9 +298,57 @@ class Device:
             raise
         finally:
             self._pending_confirmation = None
+            self._pending_notification = None
             if not future.done():
                 future.cancel()
+            if notified is not None and not notified.done():
+                notified.cancel()
             await self._async_call_callbacks()
+
+    async def _async_verify_by_notification(
+        self,
+        result: CommandResult,
+        notified: "asyncio.Future[bool]",
+        attribute: str,
+        value: str,
+    ) -> None:
+        """
+        A hub can report the commanded value without the mechanism having
+        moved. Real operations also emit a notification a few seconds later,
+        so wait ``NOTIFICATION_GRACE`` for it; if it never comes, re-send once
+        (idempotent) and wait again. ``result.verified`` records the answer.
+        """
+        try:
+            await asyncio.wait_for(asyncio.shield(notified), NOTIFICATION_GRACE)
+            result.verified = True
+            return
+        except asyncio.TimeoutError:
+            pass
+        _LOGGER.warning(
+            "%s: hub reported %s=%s but no operation notification followed in "
+            "%.0fs - the mechanism may not have moved; re-sending once to verify",
+            self._name, attribute, value, NOTIFICATION_GRACE,
+        )
+        result.attempts += 1
+        try:
+            await self._client._async_send_command(
+                self, attribute_name=attribute, value=value, prefer_live=False
+            )
+            await asyncio.wait_for(asyncio.shield(notified), NOTIFICATION_GRACE)
+            result.verified = True
+            _LOGGER.info(
+                "%s: %s=%s verified by notification after re-send", self._name, attribute, value
+            )
+        except asyncio.TimeoutError:
+            result.verified = False
+            _LOGGER.warning(
+                "%s: %s=%s still unverified after re-send - state reported by "
+                "the hub is unproven",
+                self._name, attribute, value,
+            )
+        except CommandFailedError as exc:
+            result.verified = False
+            _LOGGER.warning("%s: verification re-send rejected: %s", self._name, exc)
 
     @staticmethod
     def _structure_attrs(attrs: List[Dict[str, Any]]) -> Dict[str, Any]:

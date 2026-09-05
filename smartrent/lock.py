@@ -39,6 +39,25 @@ class DoorLock(Device):
             return pending[1] == "true"
         return None
 
+    # What the lock reports a few seconds after it really operates via RF.
+    # (Z-Wave alarm type 24 = "lock via RF" arrives unnamed from SmartRent.)
+    RF_NOTIFICATIONS = {
+        "true": ("ALARM_TYPE_24_LEVEL_1", "LOCK_VIA_RF"),
+        "false": ("UNLOCK_VIA_RF",),
+    }
+
+    def _expects_notification(self, attribute: str, value: str) -> bool:
+        return attribute == "locked" and value in self.RF_NOTIFICATIONS
+
+    def _notification_matches(
+        self, attribute: str, value: str, notification: Optional[str]
+    ) -> bool:
+        return attribute == "locked" and notification in self.RF_NOTIFICATIONS.get(value, ())
+
+    def _apply_reported_value(self, attribute: str, value: str) -> None:
+        if attribute == "locked":
+            self._locked = value == "true"
+
     def _get_attribute(self, attribute: str) -> Optional[str]:
         if attribute == "locked" and self._locked is not None:
             return str(self._locked).lower()
@@ -83,3 +102,4 @@ class DoorLock(Device):
 
         elif event.get("name") == "notifications":
             self._notification = event.get("last_read_state")
+            self._resolve_notification(self._notification)

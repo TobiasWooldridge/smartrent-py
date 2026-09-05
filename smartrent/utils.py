@@ -36,6 +36,12 @@ SMARTRENT_FETCH_INTERVAL_SECONDS = 600
 # at the 25 s deadline.
 COMMAND_RETRY_AFTER = (5.0, 5.0, 7.0)
 COMMAND_DEADLINE = 25.0
+# After the hub reports the attribute, a lock that emits operation
+# notifications must also report the matching one (e.g. UNLOCK_VIA_RF) within
+# this many seconds, or the report is treated as a phantom and the command is
+# re-sent once. On 2026-09-05 the hub reported locked=false with no
+# notification; the bolt had not moved and the resident used her key.
+NOTIFICATION_GRACE = 10.0
 
 SMARTRENT_BASE_URI = "https://control.smartrent.com/api/v2/"
 SMARTRENT_SESSIONS_URI = SMARTRENT_BASE_URI + "sessions"
@@ -583,7 +589,7 @@ class Client:
         device: "Device",
         attribute_name: str,
         value: str,
-        prefer_live: bool = True,
+        prefer_live: bool = False,
     ):
         """
         Sends command to SmartRent websocket
@@ -592,9 +598,12 @@ class Client:
 
         ``value`` value for that attribute to be changed to
 
-        ``prefer_live`` sends over the already-open update websocket when it
-        is up (no TLS handshake, no channel join: ~0.5-0.9 s faster). Falls
-        back to a fresh connection if that socket is down or the send fails.
+        ``prefer_live`` pushes over the already-open update websocket. OFF by
+        default: measured 2026-09-05, the server never acted on (or replied
+        to) update_attributes pushed there - probably because that socket's
+        token is long expired - so every such send cost a 5 s retry wait.
+        Kept for experiments; a fresh authenticated connection is the path
+        that works.
         """
         payload = COMMAND_PAYLOAD.format(
             attribute_name=attribute_name, value=value, device_id=device._device_id

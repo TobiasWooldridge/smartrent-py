@@ -38,7 +38,7 @@ async def test_live_socket_used_when_available():
         fresh.append(payload)
 
     client._async_send_payload = fresh_send
-    await client._async_send_command(FakeDevice(), "locked", "false")
+    await client._async_send_command(FakeDevice(), "locked", "false", prefer_live=True)
     assert len(client._ws.sent) == 1 and '"locked", "value": "false"' in client._ws.sent[0]
     assert fresh == []
 
@@ -54,12 +54,12 @@ async def test_fresh_connection_when_no_live_socket_or_send_fails():
             fresh.append(payload)
 
         client._async_send_payload = fresh_send
-        await client._async_send_command(FakeDevice(), "locked", "true")
+        await client._async_send_command(FakeDevice(), "locked", "true", prefer_live=True)
         assert len(fresh) == 1
 
 
 @pytest.mark.asyncio
-async def test_retries_bypass_the_live_socket():
+async def test_default_is_a_fresh_connection():
     client = make_client()
     client._ws = FakeWs()
     fresh = []
@@ -68,5 +68,5 @@ async def test_retries_bypass_the_live_socket():
         fresh.append(payload)
 
     client._async_send_payload = fresh_send
-    await client._async_send_command(FakeDevice(), "locked", "true", prefer_live=False)
+    await client._async_send_command(FakeDevice(), "locked", "true")
     assert client._ws.sent == [] and len(fresh) == 1

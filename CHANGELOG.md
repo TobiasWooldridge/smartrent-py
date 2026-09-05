@@ -1,5 +1,20 @@
 # Changelog (thw fork)
 
+## 0.7.3 - 2026-09-05
+- **Live-socket sends off by default** (`prefer_live=False`): measured, the
+  server never acts on or replies to `update_attributes` pushed on the
+  long-lived update socket, so 0.7.2's first attempt was a silent no-op that
+  cost a 5 s retry wait on every command. A fresh authenticated connection is
+  the path that works.
+- **Notification-verified locks.** A hub can report `locked=false` without the
+  bolt moving (seen 2026-09-05 16:10; the resident needed her key). A real RF
+  operation also emits `UNLOCK_VIA_RF` / `ALARM_TYPE_24_LEVEL_1` a few seconds
+  later, so after the attribute report the command waits `NOTIFICATION_GRACE`
+  (10 s) for it, re-sends once if it never comes, and records
+  `CommandResult.verified`. A notification alone also confirms a command whose
+  attribute report was lost (seen 2026-09-04 13:11). The entity shows the new
+  state at the attribute report; verification only decides whether to re-send.
+
 ## 0.7.2 - 2026-09-05
 - First send of a command goes over the already-open update websocket
   (authenticated, joined to every device topic), skipping the per-command TLS

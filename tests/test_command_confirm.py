@@ -36,10 +36,18 @@ def make_lock(locked):
     return lock, client
 
 
-def report(lock, value, delay):
+RF_NOTIFICATION = {"true": "ALARM_TYPE_24_LEVEL_1", "false": "UNLOCK_VIA_RF"}
+
+
+def report(lock, value, delay, notification=True):
+    """The hub's attribute report, followed (as a real lock does) by the RF notification."""
+
     async def _later():
         await asyncio.sleep(delay)
         await lock._update({"type": "DoorLock", "name": "locked", "last_read_state": value})
+        if notification:
+            await asyncio.sleep(0.01)
+            await lock._update({"type": "DoorLock", "name": "notifications", "last_read_state": RF_NOTIFICATION[value]})
 
     return asyncio.create_task(_later())
 
@@ -129,6 +137,7 @@ async def test_poll_can_confirm_a_missed_event():
     asyncio.create_task(poll_later())
     result = await lock.async_set_attribute("locked", "false", retry_after=(0.5,), deadline=1)
     assert result.outcome == "confirmed"
+    assert result.verified is False  # a poll carries no operation notification
 
 
 @pytest.mark.asyncio
