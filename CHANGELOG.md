@@ -1,5 +1,12 @@
 # Changelog (thw fork)
 
+## 0.7.4 - 2026-09-06
+- Fix: `Device.async_set_attribute` still pushed its first attempt over the
+  live socket (an explicit `prefer_live=True` survived 0.7.3). It now always
+  uses a fresh authenticated connection. Pushes on the live socket were seen
+  to work right after the socket (re)connects and to be silently dropped
+  later, which matches a token-age cutoff on the server; not worth the gamble.
+
 ## 0.7.3 - 2026-09-05
 - **Live-socket sends off by default** (`prefer_live=False`): measured, the
   server never acts on or replies to `update_attributes` pushed on the
