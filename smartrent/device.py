@@ -211,6 +211,32 @@ class Device:
 
         result = CommandResult(attribute=attribute, value=value)
         self._last_command = result
+
+        if self._get_attribute(attribute) == value:
+            # Already there: send once (the cache may be stale) but never
+            # enter the in-flight state. A "locking" blip on an
+            # already-locked lock renders as UNLOCKED in HomeKit, so the
+            # relock net's routine no-op used to flash "unlocked -> locked"
+            # in the Home app every day (2026-09-06).
+            result.attempts = 1
+            try:
+                await self._client._async_send_command(
+                    self, attribute_name=attribute, value=value
+                )
+                result.outcome = "unchanged"
+                _LOGGER.info(
+                    "%s: %s=%s sent; device already reports that value, "
+                    "not waiting for a report",
+                    self._name, attribute, value,
+                )
+            except CommandFailedError as exc:
+                result.outcome = "failed"
+                result.error = str(exc)
+                raise
+            finally:
+                await self._async_call_callbacks()
+            return result
+
         loop = asyncio.get_running_loop()
         future: "asyncio.Future[bool]" = loop.create_future()
         self._pending_confirmation = (attribute, value, future)
@@ -223,19 +249,6 @@ class Device:
         deadline_at = started + deadline
         gaps = list(retry_after)
         try:
-            if self._get_attribute(attribute) == value:
-                result.attempts = 1
-                await self._client._async_send_command(
-                    self, attribute_name=attribute, value=value
-                )
-                result.outcome = "unchanged"
-                _LOGGER.info(
-                    "%s: %s=%s sent; device already reports that value, "
-                    "not waiting for a report",
-                    self._name, attribute, value,
-                )
-                return result
-
             while True:
                 result.attempts += 1
                 send_started = time.monotonic()

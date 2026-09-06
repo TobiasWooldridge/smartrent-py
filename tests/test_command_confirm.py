@@ -161,3 +161,13 @@ async def test_deadline_caps_the_schedule_and_a_late_report_still_wins():
     result = await lock.async_set_attribute("locked", "false", retry_after=(0.05, 0.05, 5.0), deadline=0.3)
     assert result.outcome == "confirmed" and result.attempts == 3
     assert len(client.sends) == 3
+
+
+@pytest.mark.asyncio
+async def test_no_op_never_enters_the_in_flight_state():
+    lock, client = make_lock(locked=True)
+    seen = []
+    lock.set_update_callback(lambda: seen.append(lock.get_pending_locked()))
+    result = await lock.async_set_attribute("locked", "true", deadline=5)
+    assert result.outcome == "unchanged"
+    assert seen == [None]  # one callback for the sensor, never a pending state

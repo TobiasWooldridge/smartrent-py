@@ -1,5 +1,11 @@
 # Changelog (thw fork)
 
+## 0.7.5 - 2026-09-06
+- A command for a value the device already reports no longer enters the
+  in-flight (locking/unlocking) state. HomeKit renders `locking` as current
+  state UNSECURED, so the relock net's daily no-op lock flashed the door as
+  unlocked-then-locked in the Home app and looked like a phantom unlock.
+
 ## 0.7.4 - 2026-09-06
 - Fix: `Device.async_set_attribute` still pushed its first attempt over the
   live socket (an explicit `prefer_live=True` survived 0.7.3). It now always
